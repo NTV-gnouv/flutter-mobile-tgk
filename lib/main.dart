@@ -1,10 +1,14 @@
 import 'dart:io';
+import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:mongo_dart/mongo_dart.dart' as mongo;
 import 'package:image_picker/image_picker.dart';
+import 'package:crypto/crypto.dart';
 
 const String MONGO_URL = "mongodb+srv://vuongday:vuong123@cluster0.ddlkr.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
-const String COLLECTION_NAME = "products";
+const String PRODUCT_COLLECTION = "products";
+const String USER_COLLECTION = "users";
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,13 +22,15 @@ void main() async {
 
 class MongoService {
   static late mongo.Db _db;
-  static late mongo.DbCollection _collection;
+  static late mongo.DbCollection _products;
+  static late mongo.DbCollection _users;
 
   static Future<void> connect() async {
     try {
       _db = await mongo.Db.create(MONGO_URL);
       await _db.open();
-      _collection = _db.collection(COLLECTION_NAME);
+      _products = _db.collection(PRODUCT_COLLECTION);
+      _users = _db.collection(USER_COLLECTION);
       print("🔗 Kết nối MongoDB thành công!");
     } catch (e) {
       print("Lỗi kết nối MongoDB: $e");
@@ -32,9 +38,10 @@ class MongoService {
     }
   }
 
+  // Product methods
   static Future<List<Map<String, dynamic>>> getProducts() async {
     try {
-      return await _collection.find().toList();
+      return await _products.find().toList();
     } catch (e) {
       print("Lỗi lấy danh sách sản phẩm: $e");
       return [];
@@ -43,7 +50,7 @@ class MongoService {
 
   static Future<bool> addProduct(String id, String loaiSP, double gia, String hinhAnh) async {
     try {
-      await _collection.insertOne({
+      await _products.insertOne({
         "idsanpham": id,
         "loaisp": loaiSP,
         "gia": gia,
@@ -58,7 +65,7 @@ class MongoService {
 
   static Future<bool> updateProduct(String id, String loaiSP, double gia, String hinhAnh) async {
     try {
-      await _collection.updateOne(
+      await _products.updateOne(
         mongo.where.eq('idsanpham', id),
         mongo.modify.set('loaisp', loaiSP).set('gia', gia).set('hinhanh', hinhAnh),
       );
@@ -71,10 +78,43 @@ class MongoService {
 
   static Future<bool> deleteProduct(String id) async {
     try {
-      await _collection.deleteOne(mongo.where.eq('idsanpham', id));
+      await _products.deleteOne(mongo.where.eq('idsanpham', id));
       return true;
     } catch (e) {
       print("Lỗi xóa sản phẩm: $e");
+      return false;
+    }
+  }
+
+  // User methods
+  static String _hashPassword(String password) {
+    return sha256.convert(utf8.encode(password)).toString();
+  }
+
+  static Future<bool> registerUser(String username, String password) async {
+    try {
+      var existingUser = await _users.findOne(mongo.where.eq('username', username));
+      if (existingUser != null) return false;
+      
+      await _users.insertOne({
+        "username": username,
+        "password": _hashPassword(password),
+        "createdAt": DateTime.now()
+      });
+      return true;
+    } catch (e) {
+      print("Lỗi đăng ký: $e");
+      return false;
+    }
+  }
+
+  static Future<bool> loginUser(String username, String password) async {
+    try {
+      var user = await _users.findOne(mongo.where.eq('username', username));
+      if (user == null) return false;
+      return user['password'] == _hashPassword(password);
+    } catch (e) {
+      print("Lỗi đăng nhập: $e");
       return false;
     }
   }
@@ -89,8 +129,178 @@ class MyApp extends StatelessWidget {
         primarySwatch: Colors.teal,
         scaffoldBackgroundColor: Colors.grey[100],
       ),
-      home: ProductListScreen(),
+      initialRoute: '/login',
+      routes: {
+        '/login': (context) => LoginScreen(),
+        '/register': (context) => RegisterScreen(),
+        '/products': (context) => ProductListScreen(),
+      },
     );
+  }
+}
+
+class LoginScreen extends StatefulWidget {
+  @override
+  _LoginScreenState createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final TextEditingController _usernameController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                "Đăng nhập",
+                style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 30),
+              TextFormField(
+                controller: _usernameController,
+                decoration: InputDecoration(
+                  labelText: 'Tên đăng nhập',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) => value!.isEmpty ? 'Vui lòng nhập tên đăng nhập' : null,
+              ),
+              SizedBox(height: 20),
+              TextFormField(
+                controller: _passwordController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'Mật khẩu',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) => value!.isEmpty ? 'Vui lòng nhập mật khẩu' : null,
+              ),
+              SizedBox(height: 30),
+              ElevatedButton(
+                onPressed: _handleLogin,
+                child: Text('Đăng nhập', style: TextStyle(fontSize: 16)),
+                style: ElevatedButton.styleFrom(
+                  padding: EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+                ),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pushNamed(context, '/register'),
+                child: Text('Chưa có tài khoản? Đăng ký ngay'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _handleLogin() async {
+    if (_formKey.currentState!.validate()) {
+      bool success = await MongoService.loginUser(
+        _usernameController.text,
+        _passwordController.text,
+      );
+      if (success) {
+        Navigator.pushReplacementNamed(context, '/products');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Sai tên đăng nhập hoặc mật khẩu'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+}
+
+class RegisterScreen extends StatefulWidget {
+  @override
+  _RegisterScreenState createState() => _RegisterScreenState();
+}
+
+class _RegisterScreenState extends State<RegisterScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final TextEditingController _usernameController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Đăng ký tài khoản')),
+      body: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              TextFormField(
+                controller: _usernameController,
+                decoration: InputDecoration(
+                  labelText: 'Tên đăng nhập',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) => value!.isEmpty ? 'Vui lòng nhập tên đăng nhập' : null,
+              ),
+              SizedBox(height: 20),
+              TextFormField(
+                controller: _passwordController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'Mật khẩu',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) return 'Vui lòng nhập mật khẩu';
+                  if (value.length < 6) return 'Mật khẩu phải có ít nhất 6 ký tự';
+                  return null;
+                },
+              ),
+              SizedBox(height: 30),
+              ElevatedButton(
+                onPressed: _handleRegister,
+                child: Text('Đăng ký'),
+                style: ElevatedButton.styleFrom(
+                  padding: EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _handleRegister() async {
+    if (_formKey.currentState!.validate()) {
+      bool success = await MongoService.registerUser(
+        _usernameController.text,
+        _passwordController.text,
+      );
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Đăng ký thành công!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Tên đăng nhập đã tồn tại'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 }
 
@@ -101,7 +311,7 @@ class ProductListScreen extends StatefulWidget {
 
 class _ProductListScreenState extends State<ProductListScreen> {
   late Future<List<Map<String, dynamic>>> products;
-  String searchQuery = ""; // Biến để lưu từ khóa tìm kiếm
+  String searchQuery = "";
 
   @override
   void initState() {
@@ -134,330 +344,378 @@ class _ProductListScreenState extends State<ProductListScreen> {
   }
 
   void showProductDialog({String? id, String? loaiSP, double? gia, String? hinhAnh}) {
-    TextEditingController loaiSPController = TextEditingController(text: loaiSP ?? "");
-    TextEditingController giaController = TextEditingController(text: gia?.toString() ?? "");
-    TextEditingController hinhAnhController = TextEditingController(text: hinhAnh ?? "");
+  TextEditingController loaiSPController = TextEditingController(text: loaiSP ?? "");
+  TextEditingController giaController = TextEditingController(text: gia?.toString() ?? "");
+  TextEditingController hinhAnhController = TextEditingController(text: hinhAnh ?? "");
 
-    showDialog(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return Dialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              elevation: 0,
-              backgroundColor: Colors.transparent,
-              child: Container(
-                padding: EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 2)),
+  showDialog(
+    context: context,
+    builder: (context) {
+      return StatefulBuilder(
+        builder: (context, setState) {
+          return Dialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            child: Container(
+              padding: EdgeInsets.all(20),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      id == null ? "Thêm sản phẩm mới" : "Chỉnh sửa sản phẩm",
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                    ),
+                    SizedBox(height: 20),
+                    
+                    // Hiển thị ảnh preview
+                    Container(
+                      height: 150,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: hinhAnhController.text.isEmpty
+                          ? Center(
+                              child: Icon(Icons.image, size: 50, color: Colors.grey),
+                            )
+                          : Image.file(
+                              File(hinhAnhController.text),
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) => Center(
+                                child: Icon(Icons.error, color: Colors.red),
+                              ),
+                            ),
+                    ),
+                    SizedBox(height: 15),
+                    
+                    // Nút chọn ảnh
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        ElevatedButton.icon(
+                          icon: Icon(Icons.photo),
+                          label: Text("Thư viện"),
+                          onPressed: () async {
+                            await pickImage(ImageSource.gallery, hinhAnhController);
+                            setState(() {});
+                          },
+                        ),
+                        ElevatedButton.icon(
+                          icon: Icon(Icons.camera_alt),
+                          label: Text("Máy ảnh"),
+                          onPressed: () async {
+                            await pickImage(ImageSource.camera, hinhAnhController);
+                            setState(() {});
+                          },
+                        ),
+                        if (hinhAnhController.text.isNotEmpty)
+                          IconButton(
+                            icon: Icon(Icons.delete, color: Colors.red),
+                            onPressed: () {
+                              hinhAnhController.clear();
+                              setState(() {});
+                            },
+                          ),
+                      ],
+                    ),
+                    SizedBox(height: 20),
+                    
+                    // Nhập thông tin sản phẩm
+                    TextField(
+                      controller: loaiSPController,
+                      decoration: InputDecoration(
+                        labelText: "Tên sản phẩm",
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    SizedBox(height: 15),
+                    TextField(
+                      controller: giaController,
+                      decoration: InputDecoration(
+                        labelText: "Giá (VND)",
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                    SizedBox(height: 25),
+                    
+                    // Nút lưu/hủy
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: Text("HỦY", style: TextStyle(color: Colors.grey)),
+                        ),
+                        SizedBox(width: 10),
+                        ElevatedButton(
+                          onPressed: () async {
+                            // Validate dữ liệu
+                            if (loaiSPController.text.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text("Vui lòng nhập tên sản phẩm")),
+                              );
+                              return;
+                            }
+                            
+                            if (giaController.text.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text("Vui lòng nhập giá sản phẩm")),
+                              );
+                              return;
+                            }
+                            
+                            double? parsedGia = double.tryParse(giaController.text);
+                            if (parsedGia == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text("Giá sản phẩm phải là số")),
+                              );
+                              return;
+                            }
+                            
+                            // Xử lý lưu dữ liệu
+                            bool success;
+                            if (id == null) {
+                              // Thêm mới
+                              success = await MongoService.addProduct(
+                                DateTime.now().millisecondsSinceEpoch.toString(),
+                                loaiSPController.text,
+                                parsedGia,
+                                hinhAnhController.text,
+                              );
+                            } else {
+                              // Cập nhật
+                              success = await MongoService.updateProduct(
+                                id,
+                                loaiSPController.text,
+                                parsedGia,
+                                hinhAnhController.text,
+                              );
+                            }
+                            
+                            if (success) {
+                              Navigator.pop(context);
+                              refreshProducts();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(id == null 
+                                    ? "Thêm sản phẩm thành công" 
+                                    : "Cập nhật sản phẩm thành công"),
+                                  backgroundColor: Colors.green,
+                                ),
+                              );
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text("Lỗi khi lưu sản phẩm"),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
+                            }
+                          },
+                          child: Text(id == null ? "THÊM" : "LƯU"),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        id == null ? "Thêm sản phẩm mới" : "Chỉnh sửa sản phẩm",
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.teal[800]),
-                      ),
-                      SizedBox(height: 20),
-                      TextField(
-                        controller: loaiSPController,
-                        decoration: InputDecoration(
-                          labelText: "Loại sản phẩm",
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                          filled: true,
-                          fillColor: Colors.grey[100],
-                        ),
-                      ),
-                      SizedBox(height: 15),
-                      TextField(
-                        controller: giaController,
-                        decoration: InputDecoration(
-                          labelText: "Giá (VND)",
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                          filled: true,
-                          fillColor: Colors.grey[100],
-                        ),
-                        keyboardType: TextInputType.number,
-                      ),
-                      SizedBox(height: 15),
-                      TextField(
-                        controller: hinhAnhController,
-                        decoration: InputDecoration(
-                          labelText: "Đường dẫn hình ảnh",
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                          filled: true,
-                          fillColor: Colors.grey[100],
-                        ),
-                        readOnly: true,
-                      ),
-                      SizedBox(height: 15),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          ElevatedButton.icon(
-                            icon: Icon(Icons.photo),
-                            label: Text("Thư viện"),
-                            style: ElevatedButton.styleFrom(
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              padding: EdgeInsets.symmetric(horizontal: 15, vertical: 12),
-                            ),
-                            onPressed: () async {
-                              await pickImage(ImageSource.gallery, hinhAnhController);
-                              setState(() {});
-                            },
-                          ),
-                          ElevatedButton.icon(
-                            icon: Icon(Icons.camera_alt),
-                            label: Text("Máy ảnh"),
-                            style: ElevatedButton.styleFrom(
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              padding: EdgeInsets.symmetric(horizontal: 15, vertical: 12),
-                            ),
-                            onPressed: () async {
-                              await pickImage(ImageSource.camera, hinhAnhController);
-                              setState(() {});
-                            },
-                          ),
-                        ],
-                      ),
-                      SizedBox(height: 15),
-                      if (hinhAnhController.text.isNotEmpty)
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: Image.file(
-                            File(hinhAnhController.text),
-                            width: 120,
-                            height: 120,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                      SizedBox(height: 20),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: Text("Hủy", style: TextStyle(color: Colors.grey[600])),
-                          ),
-                          SizedBox(width: 10),
-                          ElevatedButton(
-                            onPressed: () async {
-                              if (loaiSPController.text.isEmpty || giaController.text.isEmpty) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text("Vui lòng điền đầy đủ thông tin"),
-                                    backgroundColor: Colors.red,
-                                  ),
-                                );
-                                return;
-                              }
-
-                              double? gia;
-                              try {
-                                gia = double.parse(giaController.text);
-                              } catch (e) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text("Giá phải là một số hợp lệ"),
-                                    backgroundColor: Colors.red,
-                                  ),
-                                );
-                                return;
-                              }
-
-                              bool success;
-                              if (id == null) {
-                                success = await MongoService.addProduct(
-                                  DateTime.now().millisecondsSinceEpoch.toString(),
-                                  loaiSPController.text,
-                                  gia,
-                                  hinhAnhController.text,
-                                );
-                              } else {
-                                success = await MongoService.updateProduct(
-                                  id,
-                                  loaiSPController.text,
-                                  gia,
-                                  hinhAnhController.text,
-                                );
-                              }
-
-                              if (success) {
-                                refreshProducts();
-                                Navigator.pop(context);
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(id == null ? "Thêm thành công" : "Cập nhật thành công"),
-                                    backgroundColor: Colors.green,
-                                  ),
-                                );
-                              } else {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text("Thao tác thất bại"),
-                                    backgroundColor: Colors.red,
-                                  ),
-                                );
-                              }
-                            },
-                            style: ElevatedButton.styleFrom(
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                            ),
-                            child: Text(id == null ? "Thêm" : "Cập nhật"),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
               ),
-            );
-          },
-        );
-      },
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
+  Widget _buildTextField(TextEditingController controller, String label) {
+    return TextField(
+      controller: controller,
+      decoration: InputDecoration(
+        labelText: label,
+        border: OutlineInputBorder(),
+      ),
     );
+  }
+
+  Widget _buildNumberField(TextEditingController controller, String label) {
+    return TextField(
+      controller: controller,
+      keyboardType: TextInputType.number,
+      decoration: InputDecoration(
+        labelText: label,
+        border: OutlineInputBorder(),
+      ),
+    );
+  }
+
+  Widget _buildImageField(TextEditingController controller, StateSetter setState) {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            ElevatedButton.icon(
+              icon: Icon(Icons.photo),
+              label: Text("Thư viện"),
+              onPressed: () async => await pickImage(ImageSource.gallery, controller),
+            ),
+            ElevatedButton.icon(
+              icon: Icon(Icons.camera_alt),
+              label: Text("Máy ảnh"),
+              onPressed: () async => await pickImage(ImageSource.camera, controller),
+            ),
+          ],
+        ),
+        if (controller.text.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Image.file(File(controller.text), height: 100),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildActionButtons(
+    String? id,
+    TextEditingController loaiSP,
+    TextEditingController gia,
+    TextEditingController hinhAnh,
+  ) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text("Hủy"),
+        ),
+        ElevatedButton(
+          onPressed: () => _handleSaveProduct(id, loaiSP.text, gia.text, hinhAnh.text),
+          child: Text(id == null ? "Thêm" : "Lưu"),
+        ),
+      ],
+    );
+  }
+
+  void _handleSaveProduct(String? id, String loaiSP, String gia, String hinhAnh) async {
+    if (loaiSP.isEmpty || gia.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Vui lòng điền đầy đủ thông tin"),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    double? parsedGia = double.tryParse(gia);
+    if (parsedGia == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Giá phải là số hợp lệ"),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    bool success;
+    if (id == null) {
+      success = await MongoService.addProduct(
+        DateTime.now().millisecondsSinceEpoch.toString(),
+        loaiSP,
+        parsedGia,
+        hinhAnh,
+      );
+    } else {
+      success = await MongoService.updateProduct(id, loaiSP, parsedGia, hinhAnh);
+    }
+
+    if (success) {
+      refreshProducts();
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(id == null ? "Thêm thành công" : "Cập nhật thành công"),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Thao tác thất bại"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Danh sách sản phẩm"),
-        elevation: 0,
-        backgroundColor: const Color.fromARGB(255, 236, 120, 5),
-        centerTitle: true,
+        title: Text("Quản lý sản phẩm"),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.logout),
+            onPressed: () => Navigator.pushReplacementNamed(context, '/login'),
+          ),
+        ],
       ),
       body: Column(
         children: [
-          // Thanh tìm kiếm
           Padding(
             padding: const EdgeInsets.all(10.0),
             child: TextField(
               decoration: InputDecoration(
-                hintText: "Tìm kiếm sản phẩm...",
-                prefixIcon: Icon(Icons.search, color: Colors.grey),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                filled: true,
-                fillColor: Colors.white,
-                contentPadding: EdgeInsets.symmetric(vertical: 0),
+                hintText: "Tìm kiếm...",
+                prefixIcon: Icon(Icons.search),
+                border: OutlineInputBorder(),
               ),
-              onChanged: (value) {
-                setState(() {
-                  searchQuery = value.toLowerCase(); // Cập nhật từ khóa tìm kiếm
-                });
-              },
+              onChanged: (value) => setState(() => searchQuery = value.toLowerCase()),
             ),
           ),
-          // Danh sách sản phẩm
           Expanded(
-            child: FutureBuilder(
+            child: FutureBuilder<List<Map<String, dynamic>>>(
               future: products,
-              builder: (context, AsyncSnapshot<List<Map<String, dynamic>>> snapshot) {
+              builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
-                  return Center(child: CircularProgressIndicator(color: const Color.fromARGB(255, 244, 22, 22)));
+                  return Center(child: CircularProgressIndicator());
                 }
                 if (snapshot.hasError) {
-                  return Center(child: Text("Lỗi: ${snapshot.error}", style: TextStyle(color: Colors.red)));
+                  return Center(child: Text("Lỗi: ${snapshot.error}"));
                 }
-                final products = snapshot.data ?? [];
-                // Lọc sản phẩm dựa trên từ khóa tìm kiếm
-                final filteredProducts = products.where((product) {
-                  final loaiSP = product['loaisp'].toString().toLowerCase();
-                  final gia = product['gia'].toString();
-                  return loaiSP.contains(searchQuery) || gia.contains(searchQuery);
+                
+                final filteredProducts = (snapshot.data ?? []).where((product) {
+                  return product['loaisp'].toString().toLowerCase().contains(searchQuery) ||
+                      product['gia'].toString().contains(searchQuery);
                 }).toList();
 
-                if (filteredProducts.isEmpty) {
-                  return Center(child: Text("Không tìm thấy sản phẩm", style: TextStyle(color: Colors.grey)));
-                }
                 return ListView.builder(
-                  padding: EdgeInsets.all(10),
                   itemCount: filteredProducts.length,
                   itemBuilder: (context, index) {
                     final product = filteredProducts[index];
-                    return Card(
-                      elevation: 2,
-                      margin: EdgeInsets.symmetric(vertical: 5),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                      child: ListTile(
-                        contentPadding: EdgeInsets.all(10),
-                        leading: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: product['hinhanh'].isNotEmpty
-                              ? Image.file(
-                                  File(product['hinhanh']),
-                                  width: 60,
-                                  height: 60,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (context, error, stackTrace) => Container(
-                                    width: 60,
-                                    height: 60,
-                                    color: Colors.grey[300],
-                                    child: Icon(Icons.broken_image, color: Colors.grey[600]),
-                                  ),
-                                )
-                              : Container(
-                                  width: 60,
-                                  height: 60,
-                                  color: Colors.grey[300],
-                                  child: Icon(Icons.image, color: Colors.grey[600]),
-                                ),
-                        ),
-                        title: Text(
-                          product['loaisp'],
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                        ),
-                        subtitle: Text(
-                          "Giá: ${product['gia'].toStringAsFixed(0)} VND",
-                          style: TextStyle(color: Colors.grey[600]),
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: Icon(Icons.edit, color: const Color.fromARGB(255, 246, 167, 10)),
-                              onPressed: () => showProductDialog(
-                                id: product['idsanpham'],
-                                loaiSP: product['loaisp'],
-                                gia: product['gia'].toDouble(),
-                                hinhAnh: product['hinhanh'],
-                              ),
+                    return ListTile(
+                      leading: _buildProductImage(product['hinhanh']),
+                      title: Text(product['loaisp']),
+                      subtitle: Text("Giá: ${product['gia'].toStringAsFixed(0)} VND"),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: Icon(Icons.edit, color: Colors.orange),
+                            onPressed: () => showProductDialog(
+                              id: product['idsanpham'],
+                              loaiSP: product['loaisp'],
+                              gia: product['gia'].toDouble(),
+                              hinhAnh: product['hinhanh'],
                             ),
-                            IconButton(
-                              icon: Icon(Icons.delete, color: Colors.redAccent),
-                              onPressed: () async {
-                                bool success = await MongoService.deleteProduct(product['idsanpham']);
-                                if (success) {
-                                  refreshProducts();
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text("Xóa thành công"),
-                                      backgroundColor: Colors.green,
-                                    ),
-                                  );
-                                } else {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text("Xóa thất bại"),
-                                      backgroundColor: Colors.red,
-                                    ),
-                                  );
-                                }
-                              },
-                            ),
-                          ],
-                        ),
+                          ),
+                          IconButton(
+                            icon: Icon(Icons.delete, color: Colors.red),
+                            onPressed: () => _deleteProduct(product['idsanpham']),
+                          ),
+                        ],
                       ),
                     );
                   },
@@ -468,10 +726,35 @@ class _ProductListScreenState extends State<ProductListScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        backgroundColor: const Color.fromARGB(255, 102, 217, 240),
+        child: Icon(Icons.add),
         onPressed: () => showProductDialog(),
-        child: Icon(Icons.add, size: 30),
       ),
     );
+  }
+
+  Widget _buildProductImage(String path) {
+    return path.isEmpty
+        ? Icon(Icons.image, size: 40)
+        : Image.file(File(path), width: 40, height: 40);
+  }
+
+  void _deleteProduct(String id) async {
+    bool success = await MongoService.deleteProduct(id);
+    if (success) {
+      refreshProducts();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Xóa thành công"),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Xóa thất bại"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 }
